@@ -9,7 +9,7 @@
 (library
     (name burst)
     (public_name burst)
-    (libraries core-and-more)
+    (libraries core-and-more timbuk-simple)
     (preprocess (pps ppx_bin_prot ppx_hash ppx_deriving.std ppx_let ppx_optcomp ppx_compare ppx_sexp_conv
     ;export OCAML_LANDMARKS=auto,format=json,output=lm.json
     )))

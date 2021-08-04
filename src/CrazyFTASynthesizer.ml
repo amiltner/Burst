@@ -1,9 +1,55 @@
 open CoreAndMore
 open Lang
 
-module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *)= struct
-  module A = B(FTAConstructor.Transition)(FTAConstructor.State)
-  module C = FTAConstructor.Make(A)
+module Create(B : Automaton.Builder) (*: Synthesizers.PredicateSynth.S *)= struct
+  module ExtractorSingleton =
+  struct
+    let rec extract_recursive_calls
+        (ts:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+      : ((FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t * FTAConstructor.State.t) list =
+      begin match ts with
+        | TermState (t,target,[source_ts]) ->
+          if FTAConstructor.Transition.equal_id (FTAConstructor.Transition.id t) FTAConstructor.Transition.Rec then
+            (source_ts,target)::(extract_recursive_calls source_ts)
+          else
+            List.concat_map
+              ~f:(extract_recursive_calls)
+              [source_ts]
+        | TermState (_,_,tss) ->
+          List.concat_map
+            ~f:(extract_recursive_calls)
+            tss
+      end
+
+    type t = (FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t -> (Value.t * Value.t) list
+
+    let extract_recursive_requirements
+        (sin:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+        (sout:FTAConstructor.State.t)
+      : (Value.t * Value.t * Value.t * (FTAConstructor.Transition.t TimbukSimple.Term.t)) list =
+      begin match (FTAConstructor.State.destruct_vals (TimbukSimple.TermState.get_state sin),FTAConstructor.State.destruct_vals sout) with
+        | (Some (vvsin,_), Some (vvsout,_)) ->
+          let t = TimbukSimple.TermState.to_term sin in
+          let outs = List.map ~f:snd vvsout in
+          let inouts = List.zip_exn vvsin outs in
+          List.map ~f:(fun ((exv,vsin),vsout) -> (exv,vsin,vsout,t)) inouts
+        | (None, None) ->
+          []
+        | _ -> failwith "when would this happen?"
+      end
+    let value
+        (ts:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+      : (Value.t * Value.t) list =
+      List.dedup_and_sort ~compare:(pair_compare Value.compare Value.compare)
+        (List.concat_map
+           ~f:(fun (ts,s) ->
+               let vss = extract_recursive_requirements ts s in
+               List.map ~f:(fun (_,v1,v2,_) -> (v1,v2)) vss)
+           (extract_recursive_calls ts))
+  end
+
+  module A = TimbukSimple.Automaton.Make(FTAConstructor.Transition)(FTAConstructor.State)(FTAConstructor.Reqs)
+  module C = FTAConstructor.Make(A)(ExtractorSingleton)
 
   let __INITIAL_SIZE__ = 2
   let __INITIAL_MVM__ = 3.0
@@ -942,7 +988,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
       : ((t,KnowledgeBase.NPPFConj.t) either) option =
       let e_o =
         Option.map
-          ~f:(C.term_to_angelic_exp Type._unit % A.TermState.to_term)
+          ~f:(C.term_to_angelic_exp Type._unit % TimbukSimple.TermState.to_term)
           (C.min_term_state pqe.c)
       in
       (*let eval_context =
@@ -957,7 +1003,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                 | None -> true
                 | Some _ ->
                   (*print_endline (string_of_list Value.show cand.inputs);*)
-                  let ans = not (C.accepts_term cand (A.TermState.to_term (Option.value_exn (C.min_term_state pqe.c)))) in
+                  let ans = not (C.accepts_term cand (TimbukSimple.TermState.to_term (Option.value_exn (C.min_term_state pqe.c)))) in
                   (*let accepter = A.accepting_term_state cand.a (A.TermState.to_term (Option.value_exn (C.min_term_state pqe.c))) in
                     print_endline (string_of_option A.TermState.show accepter);*)
                   ans
@@ -1341,7 +1387,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
         (pred:Value.t -> Value.t -> bool)
         (orig_inputs:Value.t list)
       : bool =
-      let term = A.TermState.to_term pqe.rep in
+      let term = TimbukSimple.TermState.to_term pqe.rep in
       let fune = C.term_to_safe_eval pqe.c.input_type pqe.c.output_type term (fun v1 v2 -> strict_functional_subvalue ~context ~ds:pqe.c.ds v2 v1) in
       List.for_all
         ~f:(fun vin ->
@@ -1442,7 +1488,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
     let priority
         (qe:t)
       : Float.t * Int.t * Int.t * Int.t =
-      (C.term_cost ~print:false (A.TermState.to_term qe.rep)
+      (C.term_cost ~print:false (TimbukSimple.TermState.to_term qe.rep)
       ,Nonpermitteds.size qe.nonpermitted
       ,Constraints.size qe.constraints
       ,qe.num_its)
@@ -1450,7 +1496,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
     let to_string_legible
         (qe:t)
       : string =
-      let es = Expr.show (C.term_to_exp_internals (A.TermState.to_term qe.rep)) in
+      let es = Expr.show (C.term_to_exp_internals (TimbukSimple.TermState.to_term qe.rep)) in
       let cs = Constraints.show qe.constraints in
       "term: " ^ es ^ "\nconstraints: " ^ cs ^ "\nnonpermitted: " ^ Nonpermitteds.show qe.nonpermitted
 
@@ -1458,7 +1504,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
         (qe:t)
         (ts:A.TermState.t)
       : (A.TermState.t * FTAConstructor.State.t * int option) list =
-      let t = A.TermState.to_term ts in
+      let t = TimbukSimple.TermState.to_term ts in
       List.concat_mapi
         ~f:(fun i c ->
             List.map
@@ -1660,7 +1706,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                   Consts.log (fun _ -> "\n\nDone Intersecting! All Values" ^ ValueSet.show pqe.inputs);
                   let ts = pqe.rep in
                   if PQE.full_satisfies ~context pqe orig_pred orig_inputs then
-                    (FoundResultProp (A.TermState.to_term ts), gs)
+                    (FoundResultProp (TimbukSimple.TermState.to_term ts), gs)
                   else
                     let rcs =
                       List.dedup_and_sort
@@ -1672,7 +1718,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                     Consts.log (fun () ->
                         string_of_list
                           (string_of_triple
-                             (FTAConstructor.State.show % A.TermState.get_state)
+                             (FTAConstructor.State.show % TimbukSimple.TermState.get_state)
                              FTAConstructor.State.show
                              (string_of_option Int.to_string))
                           rcs);
@@ -1749,7 +1795,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                               bs
                           in
                           if List.length new_constraints = 0 then
-                            let e = (*C.term_to_exp tin tout*) (A.TermState.to_term ts) in
+                            let e = (*C.term_to_exp tin tout*) (TimbukSimple.TermState.to_term ts) in
                             (*print_endline (string_of_int @$ Expr.size e);*)
                             (FoundResultProp e,gs)
                           else
@@ -2005,7 +2051,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                     begin match qe with
                       | Left qe ->
                         Consts.log (fun () -> "succeeded update with priority: " ^ (PQE.Priority.show (PQE.priority qe)));
-                        Consts.log (fun () -> "new discovered value was: " ^ Expr.show (C.term_to_exp_internals (A.TermState.to_term qe.rep)));
+                        Consts.log (fun () -> "new discovered value was: " ^ Expr.show (C.term_to_exp_internals (TimbukSimple.TermState.to_term qe.rep)));
                         let pq = Some (PQ.push specs qe) in
                         let a = { a with gs; pq; } in
                         find_it_out a
@@ -2020,7 +2066,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
                     begin match qe with
                       | Left qe ->
                         Consts.log (fun () -> "succeeded intersect with priority: " ^ (PQE.Priority.show (PQE.priority qe)));
-                        Consts.log (fun () -> "new discovered value was: " ^ Expr.show (C.term_to_exp_internals (A.TermState.to_term qe.rep)));
+                        Consts.log (fun () -> "new discovered value was: " ^ Expr.show (C.term_to_exp_internals (TimbukSimple.TermState.to_term qe.rep)));
                         let pq = Some (PQ.push specs qe) in
                         let a = { a with gs; pq; } in
                         find_it_out a

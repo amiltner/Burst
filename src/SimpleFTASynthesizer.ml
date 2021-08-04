@@ -1,9 +1,50 @@
 open CoreAndMore
 open Lang
 
-module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *)= struct
-  module A = B(FTAConstructor.Transition)(FTAConstructor.State)
-  module C = FTAConstructor.Make(A)
+module Create(B : Automaton.Builder) (*: Synthesizers.PredicateSynth.S *)= struct
+  module ExtractorSingleton =
+  struct
+    let rec extract_recursive_calls
+        (ts:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+      : ((FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t * FTAConstructor.State.t) list =
+      begin match ts with
+        | TermState (t,target,[source_ts]) ->
+          if FTAConstructor.Transition.equal_id (FTAConstructor.Transition.id t) FTAConstructor.Transition.Rec then
+            (source_ts,target)::(extract_recursive_calls source_ts)
+          else
+            List.concat_map
+              ~f:(extract_recursive_calls)
+              [source_ts]
+        | TermState (_,_,tss) ->
+          List.concat_map
+            ~f:(extract_recursive_calls)
+            tss
+      end
+
+    let extract_recursive_requirements
+        (sin:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+        (sout:FTAConstructor.State.t)
+      : (Value.t * Value.t * Value.t * (FTAConstructor.Transition.t TimbukSimple.Term.t)) list =
+      begin match (FTAConstructor.State.destruct_vals (TimbukSimple.TermState.get_state sin),FTAConstructor.State.destruct_vals sout) with
+        | (Some (vvsin,_), Some (vvsout,_)) ->
+          let t = TimbukSimple.TermState.to_term sin in
+          let outs = List.map ~f:snd vvsout in
+          let inouts = List.zip_exn vvsin outs in
+          List.map ~f:(fun ((exv,vsin),vsout) -> (exv,vsin,vsout,t)) inouts
+        | (None, None) ->
+          []
+        | _ -> failwith "when would this happen?"
+      end
+
+    type t = (FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t -> bool
+
+    let value
+        (_:(FTAConstructor.Transition.t,FTAConstructor.State.t) TimbukSimple.TermState.t)
+      : bool =
+      failwith "ah"
+  end
+  module A = TimbukSimple.Automaton.Make(FTAConstructor.Transition)(FTAConstructor.State)(FTAConstructor.SimpleReqs)
+  module C = FTAConstructor.Make(A)(ExtractorSingleton)
 
   let __INITIAL_SIZE__ = 2
   let __INITIAL_MVM__ = 3.0
@@ -612,7 +653,7 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
         ~(inputs:Value.t list)
         ~(ds:C.TypeDS.t)
       : bool =
-      let term = A.TermState.to_term rep in
+      let term = TimbukSimple.TermState.to_term rep in
       let fune = C.term_to_safe_eval input output term (fun v1 v2 -> strict_functional_subvalue ~context ~ds v2 v1) in
       List.for_all
         ~f:(fun vin ->
@@ -716,10 +757,10 @@ module Create(B : Automata.AutomatonBuilder) (*: Synthesizers.PredicateSynth.S *
       in
       let rec find_in_c c =
         C.invalidate_computations c;
-        let rep_o = C.min_term_state_silly c (fun t -> TermSet.member !subprocd t) (fun t -> TermSet.member !procd t) in
+        let rep_o = C.min_term_state c (*(fun t -> TermSet.member !subprocd t) (fun t -> TermSet.member !procd t)*) in
         begin match rep_o with
           | Some rep ->
-            let term = (A.TermState.to_term rep) in
+            let term = (TimbukSimple.TermState.to_term rep) in
             if full_satisfies ~context ~rep ~input:a.tin ~output:a.tout ~pred ~inputs ~ds then
               (FoundResult term,{ a with gs})
             else

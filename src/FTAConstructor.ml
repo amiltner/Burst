@@ -194,14 +194,55 @@ struct
       "SwitchOn(" ^ (String.concat ~sep:"," (List.map ~f:Id.to_string bs)) ^ ")"
     | Apply ->
       "Apply"
-  
+
 
   (*let rec_ = create (Rec,1)*)
 
   let arity = trd3 % node
 end
 
-module Make(A : Automata.Automaton with module Symbol := Transition and module State := State) = struct
+module Reqs = struct
+  type t = (Value.t * Value.t) list
+  [@@deriving eq, hash, ord, show]
+
+  let partial_compare r1s r2s =
+    let size1 = List.length r1s in
+    let size2 = List.length r2s in
+    if size1 = size2 then
+      if List.equal
+          (fun (v11,v12) (v21,v22) ->
+             Lang.Value.equal v11 v21 && Lang.Value.equal v12 v22)
+          r1s
+          r2s then
+        PO_EQ
+      else
+        PO_INCOMPARABLE
+    else if size1 < size2 then
+      if sublist_on_sorted ~cmp:(pair_compare Lang.Value.compare Lang.Value.compare) r1s r2s then
+        PO_LT
+      else
+        PO_INCOMPARABLE
+    else
+    if sublist_on_sorted ~cmp:(pair_compare Lang.Value.compare Lang.Value.compare) r2s r1s then
+      PO_GT
+    else
+      PO_INCOMPARABLE
+end
+
+module SimpleReqs = struct
+  type t = bool
+  [@@deriving eq, hash, ord, show]
+
+  let partial_compare b1 b2 =
+    begin match (b1,b2) with
+      | (true,true) -> PO_INCOMPARABLE
+      | (true,false) -> PO_GT
+      | (false,true) -> PO_LT
+      | (false,false) -> PO_EQ
+    end
+end
+
+module Make(A : Automaton.S with module Symbol := Transition and module State := State)(ReqCaller : Singleton with type t = A.TermState.t -> A.Reqs.t) = struct
   module TypeDS = struct
     include
       DisjointSetWithSetDataOf
@@ -301,7 +342,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
   let xid = Id.create "x"
 
   let rec term_to_exp_internals
-      (Term (t,ts):A.term)
+      (Term (t,ts):A.Term.t)
     : Expr.t =
     begin match Transition.id t with
       | Apply ->
@@ -374,7 +415,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       (Expr.mk_func (xid,tin) internal)
 
   let rec term_to_safe_eval_internals
-      (Term (t,ts):A.term)
+      (Term (t,ts):A.Term.t)
     : SafeEval.expr =
     begin match Transition.id t with
       | Apply ->
@@ -436,7 +477,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
   let term_to_safe_eval
       (tin:Type.t)
       (tout:Type.t)
-      (t:A.term)
+      (t:A.Term.t)
       (checker:Value.t -> Value.t -> bool)
     : SafeEval.expr =
     let internal = term_to_safe_eval_internals t in
@@ -451,10 +492,10 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
 
   let term_to_angelic_exp
       (tin:Type.t)
-      (t:A.term)
+      (t:A.Term.t)
     : AngelicEval.expr =
     let rec term_to_angelic_exp
-        (Term (t,ts):A.term)
+        (Term (t,ts):A.Term.t)
       : AngelicEval.expr =
       AngelicEval.(begin match Transition.id t with
           | Apply ->
@@ -530,7 +571,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
           | None -> None
           | Some es ->
             Some
-              (A.Term
+              (TimbukSimple.Term.Term
                  (Transition.create
                     (Transition.TupleConstruct (List.length es)
                     ,desired_t
@@ -547,7 +588,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
                   let eo = term_of_type ds t in
                   Option.map
                     ~f:(fun e ->
-                        A.Term
+                        TimbukSimple.Term.Term
                           (Transition.create
                              (Transition.VariantConstruct i
                              ,desired_t
@@ -567,8 +608,8 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
     Option.value_exn (term_of_type ds x)
 
   let rec extract_unbranched_states_internal
-      (TS (t,_,ts):A.term_state)
-    : A.term_state list =
+      (TermState (t,_,ts):A.TermState.t)
+    : A.TermState.t list =
     begin match Transition.id t with
        | Apply ->
          begin match ts with
@@ -606,13 +647,13 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
        | VariantSwitch _ ->
          begin match ts with
            | t::ts ->
-             let matched_term = A.TermState.to_term t in
+             let matched_term = TimbukSimple.TermState.to_term t in
              let l = extract_unbranched_states_internal t in
              l@
              (List.concat_map
                 ~f:(fun t ->
                     let l = extract_unbranched_states_internal t in
-                    List.filter ~f:(fun t -> not (A.Term.equal matched_term (A.TermState.to_term t))) l)
+                    List.filter ~f:(fun t -> not (A.Term.equal matched_term (TimbukSimple.TermState.to_term t))) l)
                 ts)
            | [] -> failwith "cannot happen"
          end
@@ -626,9 +667,9 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
     end
 
   let extract_unbranched_states
-      ((*TS (t,state,ts)*)ts:A.term_state)
+      ((*TS (t,state,ts)*)ts:A.TermState.t)
     : State.t list =
-    List.map ~f:A.(State.normalize % TermState.get_state) (extract_unbranched_states_internal ts)
+    List.map ~f:(State.normalize % TimbukSimple.TermState.get_state) (extract_unbranched_states_internal ts)
     (*begin match Transition.id t with
        | Apply ->
          begin match ts with
@@ -686,8 +727,8 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       end*)
 
   let rec extract_unbranched_switches
-      (Term (t,ts):A.term)
-    : (A.term * Id.t) list =
+      (Term (t,ts):A.Term.t)
+    : (A.Term.t * Id.t) list =
     begin match Transition.id t with
        | Apply ->
          begin match ts with
@@ -791,7 +832,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
                       its
                   in
                   let is = List.map ~f:fst its in
-                  A.Term
+                  TimbukSimple.Term.Term
                     (Transition.create
                        (Transition.VariantSwitch is
                        ,t
@@ -828,7 +869,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
           (children:A.Term.t list)
         : A.Term.t =
         let s = List.length children in
-        A.Term (Transition.create (id,ty,s),children)
+        TimbukSimple.Term.Term (Transition.create (id,ty,s),children)
       in
       begin match e with
         | Var ->
@@ -1518,11 +1559,11 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       let pp _ _ = failwith "no impl"
       let show _ = failwith "no impl"
     end)
-  type min_tree_acc' = StateToTree.t * (A.term * State.t) list
+  type min_tree_acc' = StateToTree.t * (A.Term.t * State.t) list
 
   let min_tree'
       (c:t)
-    : A.term =
+    : A.Term.t =
     let get_produced_from
         (st:StateToTree'.t)
         (t:Transition.t)
@@ -1537,7 +1578,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
         ~f:(fun iss ->
             let (ints,ss) = List.unzip iss in
             let size = List.fold ~f:(+) ~init:1 ints in
-            (size,A.Term (t,ss)))
+            (size,TimbukSimple.Term.Term (t,ss)))
         (distribute_option subs)
     in
     let rec min_tree_internal
@@ -1639,7 +1680,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       term_cost_internal t
 
   let termstate_cost ?print:(_=false) t =
-    term_cost (A.TermState.to_term t)
+    term_cost (TimbukSimple.TermState.to_term t)
 
   let call_cost
       ((vin,vout):Value.t * Value.t)
@@ -1650,14 +1691,14 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       (ts:A.TermState.t)
     : (A.TermState.t * State.t) list =
     begin match ts with
-      | TS (t,target,[source_ts]) ->
+      | TermState (t,target,[source_ts]) ->
         if Transition.equal_id (Transition.id t) Transition.Rec then
           (source_ts,target)::(extract_recursive_calls source_ts)
         else
           List.concat_map
             ~f:(extract_recursive_calls)
             [source_ts]
-      | TS (_,_,tss) ->
+      | TermState (_,_,tss) ->
         List.concat_map
           ~f:(extract_recursive_calls)
           tss
@@ -1667,9 +1708,9 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
       (sin:A.TermState.t)
       (sout:State.t)
     : (Value.t * Value.t * Value.t * A.Term.t) list =
-    begin match (State.destruct_vals (A.TermState.get_state sin),State.destruct_vals sout) with
+    begin match (State.destruct_vals (TimbukSimple.TermState.get_state sin),State.destruct_vals sout) with
       | (Some (vvsin,_), Some (vvsout,_)) ->
-        let t = A.TermState.to_term sin in
+        let t = TimbukSimple.TermState.to_term sin in
         let outs = List.map ~f:snd vvsout in
         let inouts = List.zip_exn vvsin outs in
         List.map ~f:(fun ((exv,vsin),vsout) -> (exv,vsin,vsout,t)) inouts
@@ -1689,7 +1730,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
          (extract_recursive_calls ts))
 
   let cost t =
-    term_cost (A.TermState.to_term t)
+    term_cost (TimbukSimple.TermState.to_term t)
 
   let is_valid_term
       (Term (t,ts):A.Term.t)
@@ -1729,7 +1770,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
   let is_valid_ts
       (ts:A.TermState.t)
     : bool =
-    is_valid_term (A.TermState.to_term ts)
+    is_valid_term (TimbukSimple.TermState.to_term ts)
     && is_valid_calls (calls ts)
 
   let min_term_state
@@ -1742,7 +1783,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
           let basic_mts =
             Consts.time
               Consts.min_elt_times
-              (fun _ -> A.min_term_state c.a ~f:is_valid_ts ~cost ~reqs:calls)
+              (fun _ -> A.min_term_state c.a ~f:is_valid_ts ~cost ~reqs:ReqCaller.value)
           in
           begin match basic_mts with
             | None ->
@@ -1761,7 +1802,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
         mts
     end
 
-  let min_term_state_silly
+  (*let min_term_state_simple
       (c:t)
       (contained:A.Term.t -> bool)
       (endcontained:A.Term.t -> bool)
@@ -1773,7 +1814,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
           let basic_mts =
             Consts.time
               Consts.min_elt_times
-              (fun _ -> A.min_term_state_silly c.a ~f:(fun ts -> is_valid_ts ts && not (endcontained (A.TermState.to_term ts))) ~cost ~reqs:(fun ts -> contained (A.TermState.to_term ts)))
+              (fun _ -> A.min_term_state_simple c.a ~f:(fun ts -> is_valid_ts ts && not (endcontained (A.TermState.to_term ts))) ~cost ~reqs:(fun ts -> contained (A.TermState.to_term ts)))
           in
           begin match basic_mts with
             | None ->
@@ -1790,7 +1831,7 @@ module Make(A : Automata.Automaton with module Symbol := Transition and module S
         in
         c.min_term_state <- Some mts;
         mts
-    end
+    end*)
 
   let size (c:t)
     : int =
